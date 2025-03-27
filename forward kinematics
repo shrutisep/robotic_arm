@@ -1,0 +1,167 @@
+#include <Servo.h>
+#include <math.h>
+
+// ✅ Define Servo Pins
+#define BASE_SERVO_PIN 5
+#define SHOULDER_SERVO_PIN 6
+#define ELBOW_SERVO_PIN 7
+#define WRIST_SERVO_PIN 8
+#define GRIPPER_SERVO_PIN 9
+
+// ✅ Define Potentiometer Pins
+#define POT1_PIN A0
+#define POT2_PIN A1
+#define POT3_PIN A2
+#define POT4_PIN A3
+
+// ✅ ADC Calibration
+#define ADC_MIN 0
+#define ADC_MAX 1023
+
+// ✅ Robotic Arm Link Lengths (in cm)
+const float L1 = 7.0;   
+const float L2 = 11.0;  
+const float L3 = 3.5;   
+const float L4 = 8.5;   
+const float z_base = 4.5;
+
+// ✅ Optimization Parameters
+const float MAX_ERROR = 0.5;
+const float STEP_SIZE = 0.01;
+const int MAX_ITER = 100;
+
+// ✅ Servo Objects
+Servo baseServo, shoulderServo, elbowServo, wristServo, gripperServo;
+
+// ✅ Forward Kinematics Function
+void forwardKinematics(float theta1, float theta2, float theta3, float theta4, float &x, float &y, float &z) {
+    theta1 = radians(theta1);
+    theta2 = radians(theta2);
+    theta3 = radians(theta3);
+    theta4 = radians(theta4);
+
+    float r_proj = L1 * cos(theta2) + L2 * cos(theta2 + theta3) + L3 * cos(theta2 + theta3 + theta4);
+    x = r_proj * cos(theta1);
+    y = r_proj * sin(theta1);
+    z = z_base + L1 * sin(theta2) + L2 * sin(theta2 + theta3) + L3 * sin(theta2 + theta3 + theta4);
+}
+
+// ✅ Iterative Inverse Kinematics Function
+bool inverseKinematics(float targetX, float targetY, float targetZ, float &theta1, float &theta2, float &theta3, float &theta4) {
+    float currentX, currentY, currentZ;
+    float error = 1000.0;
+    int iter = 0;
+
+    while (error > MAX_ERROR && iter < MAX_ITER) {
+        forwardKinematics(theta1, theta2, theta3, theta4, currentX, currentY, currentZ);
+        
+        float dx = targetX - currentX;
+        float dy = targetY - currentY;
+        float dz = targetZ - currentZ;
+        error = sqrt(dx * dx + dy * dy + dz * dz);
+
+        float J[3][4];  
+        float delta = 1.0;
+
+        for (int j = 0; j < 4; j++) {
+            float angles[4] = {theta1, theta2, theta3, theta4};
+            angles[j] += delta;
+            
+            float xp, yp, zp;
+            forwardKinematics(angles[0], angles[1], angles[2], angles[3], xp, yp, zp);
+            
+            J[0][j] = (xp - currentX) / delta;
+            J[1][j] = (yp - currentY) / delta;
+            J[2][j] = (zp - currentZ) / delta;
+        }
+
+        float dTheta[4] = {0};
+        for (int j = 0; j < 4; j++) {
+            dTheta[j] = STEP_SIZE * (J[0][j] * dx + J[1][j] * dy + J[2][j] * dz);
+        }
+
+        theta1 += dTheta[0];
+        theta2 += dTheta[1];
+        theta3 += dTheta[2];
+        theta4 += dTheta[3];
+
+        iter++;
+    }
+
+    return (error <= MAX_ERROR);
+}
+
+// ✅ Setup Function
+void setup() {
+    Serial.begin(9600);
+    baseServo.attach(BASE_SERVO_PIN);
+    shoulderServo.attach(SHOULDER_SERVO_PIN);
+    elbowServo.attach(ELBOW_SERVO_PIN);
+    wristServo.attach(WRIST_SERVO_PIN);
+    gripperServo.attach(GRIPPER_SERVO_PIN);
+    Serial.println("Robotic Arm Initialized...");
+}
+
+// ✅ Main Loop
+void loop() {
+    // ✅ Read potentiometer values
+    int pot1 = analogRead(POT1_PIN);
+    int pot2 = analogRead(POT2_PIN);
+    int pot3 = analogRead(POT3_PIN);
+    int pot4 = analogRead(POT4_PIN);
+
+    // ✅ Convert ADC values to angles (0° to 180°)
+    float theta1 = map(pot1, ADC_MIN, ADC_MAX, 0, 180);
+    float theta2 = map(pot2, ADC_MIN, ADC_MAX, 0, 180);
+    float theta3 = map(pot3, ADC_MIN, ADC_MAX, 0, 180);
+    float theta4 = map(pot4, ADC_MIN, ADC_MAX, 0, 180);
+
+    // ✅ Move servos according to potentiometer input
+    baseServo.write(theta1);
+    shoulderServo.write(theta2);
+    elbowServo.write(theta3);
+    wristServo.write(theta4);
+
+    // ✅ Compute Forward Kinematics
+    float x, y, z;
+    forwardKinematics(theta1, theta2, theta3, theta4, x, y, z);
+    Serial.print("Theta1: "); Serial.print(theta1);
+    Serial.print(" | Theta2: "); Serial.print(theta2);
+    Serial.print(" | Theta3: "); Serial.print(theta3);
+    Serial.print(" | Theta4: "); Serial.print(theta4);
+    Serial.print(" --> X: "); Serial.print(x);
+    Serial.print(" Y: "); Serial.print(y);
+    Serial.print(" Z: "); Serial.println(z);
+
+    // ✅ Check for IK input from Serial Monitor
+    if (Serial.available()) {
+        Serial.println("Enter X Y Z values:");
+        while (Serial.available() == 0) {}  
+        String input = Serial.readStringUntil('\n');
+        float targetX, targetY, targetZ;
+
+        if (sscanf(input.c_str(), "%f %f %f", &targetX, &targetY, &targetZ) == 3) {
+            Serial.println("Solving Inverse Kinematics...");
+            float ikTheta1 = theta1, ikTheta2 = theta2, ikTheta3 = theta3, ikTheta4 = theta4;
+            if (inverseKinematics(targetX, targetY, targetZ, ikTheta1, ikTheta2, ikTheta3, ikTheta4)) {
+                Serial.print("IK Angles: ");
+                Serial.print(ikTheta1); Serial.print(", ");
+                Serial.print(ikTheta2); Serial.print(", ");
+                Serial.print(ikTheta3); Serial.print(", ");
+                Serial.println(ikTheta4);
+
+                // ✅ Move Servos to IK solution
+                baseServo.write(ikTheta1);
+                shoulderServo.write(ikTheta2);
+                elbowServo.write(ikTheta3);
+                wristServo.write(ikTheta4);
+            } else {
+                Serial.println("IK failed to find solution!");
+            }
+        } else {
+            Serial.println("⚠️ Invalid input! Please enter three numbers separated by spaces.");
+        }
+    }
+
+    delay(100);
+}
